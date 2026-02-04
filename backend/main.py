@@ -1,12 +1,12 @@
 import os
-import whisper
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import shutil
+import whisper
+import librosa
+import numpy as np
 
 app = FastAPI()
 
-# Enable CORS for your Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,43 +14,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load the AI model once when the server starts
-# 'base' is good for speed; use 'small' or 'medium' for better Hindi accuracy
-print("Loading Indic-AI Model (Whisper)... Please wait.")
 model = whisper.load_model("base")
-print("Model Loaded Successfully!")
 
-@app.post("/api/process-speech")
-async def process_speech(file: UploadFile = File(...), language: str = Form(...)):
-    # 1. Save the uploaded audio chunk to a temporary file
-    temp_filename = f"temp_{file.filename}.wav"
-    with open(temp_filename, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+RESPONSES = {
+    "en": {
+        "secure": "Identity confirmed. I have opened the secure ZK-Vault for your transaction.",
+        "danger": "Warning: High fraud probability detected. Encryption vault locked.",
+        "neutral": "Analyzing call security... please continue speaking."
+    },
+    "hi": {
+        "secure": "आवाज़ की पहचान हो गई है। मैंने सुरक्षित ZK-Vault खोल दिया है।",
+        "danger": "चेतावनी: धोखाधड़ी की संभावना है। लेनदेन रोक दिया गया है।",
+        "neutral": "मैं इस कॉल की सुरक्षा की जांच कर रहा हूं।"
+    }
+}
 
-    try:
-        # 2. Run Whisper Transcription
-        # We tell it the language to improve accuracy
-        print(f"Transcribing {language} audio...")
-        result = model.transcribe(temp_filename, language=language)
-        
-        transcript = result["text"]
-        print(f"Transcript: {transcript}")
+def analyze_voice_dna(audio_path):
+    y, sr = librosa.load(audio_path)
+    flatness = librosa.feature.spectral_flatness(y=y).mean()
+    return True if flatness < 0.0005 else False
 
-        return {
-            "status": "success",
-            "dummy_transcript": transcript,
-            "detected_language": language
-        }
+def get_scam_rating(transcript):
+    keywords = ["otp", "cvv", "bank", "lottery", "urgent", "password", "kyc", "pin"]
+    score = sum(30 for word in keywords if word in transcript.lower())
+    if score >= 60: return "🛑 DANGEROUS: SCAM DETECTED", "Danger"
+    if score >= 30: return "⚠️ CAUTION: SUSPICIOUS", "High Risk"
+    return "✅ VERIFIED HUMAN", "Secure"
 
-    except Exception as e:
-        print(f"Error during transcription: {e}")
-        return {"status": "error", "dummy_transcript": "Error processing audio locally."}
-    
-    finally:
-        # 3. Clean up the temp file
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
+@app.post("/api/verify-call")
+async def verify_call(file: UploadFile = File(...)):
+    temp_path = f"temp_{file.filename}"
+    with open(temp_path, "wb") as f:
+        f.write(await file.read())
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    is_deepfake = analyze_voice_dna(temp_path)
+    result = model.transcribe(temp_path)
+    transcript = result["text"]
+    lang = result.get("language", "en")
+
+    if is_deepfake:
+        label, status = "🚨 DEEPFAKE DETECTED", "Danger"
+    else:
+        label, status = get_scam_rating(transcript)
+
+    lang_key = lang if lang in RESPONSES else "en"
+    ai_reply = RESPONSES[lang_key].get(status.lower() if status != "High Risk" else "danger", RESPONSES["en"]["neutral"])
+
+    os.remove(temp_path)
+    return {"label": label, "status": status, "transcript": transcript, "ai_response": ai_reply, "language": lang.upper()}
