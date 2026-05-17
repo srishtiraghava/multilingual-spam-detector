@@ -26,7 +26,7 @@ app.add_middleware(
 )
 
 # Whisper model (use "tiny" for faster demo, "base" for better accuracy)
-model = whisper.load_model("base")
+model = whisper.load_model("tiny")
 
 # ZK Verification Key (place verification_key.json next to main.py)
 VERIFICATION_KEY = Path("verification_key.json")
